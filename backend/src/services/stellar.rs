@@ -1,6 +1,8 @@
 //! Stellar Horizon + Soroban RPC service — stub.
 //! TODO: See docs/ISSUES.md for full implementation spec.
 
+#![allow(dead_code)]
+
 use anyhow::Result;
 
 pub struct StellarService;

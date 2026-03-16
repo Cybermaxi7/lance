@@ -1,6 +1,8 @@
 //! Background worker — stub.
 //! TODO: See docs/ISSUES.md for full implementation spec.
 
+#![allow(dead_code)]
+
 use sqlx::PgPool;
 
 pub async fn run_judge_worker(_pool: PgPool) {
