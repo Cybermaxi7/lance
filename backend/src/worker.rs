@@ -56,49 +56,18 @@ async fn process_dispute(
         .execute(pool)
         .await?;
 
+
     #[derive(sqlx::FromRow)]
     struct JobRow {
-        description: String,
         on_chain_job_id: Option<i64>,
-        client_address: String,
-        freelancer_address: Option<String>,
     }
 
-    let job = sqlx::query_as::<_, JobRow>(
-        "SELECT description, on_chain_job_id, client_address, freelancer_address FROM jobs WHERE id = $1",
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await?;
-
-    #[derive(sqlx::FromRow)]
-    struct EvidenceRow {
-        submitted_by: String,
-        content: String,
-    }
-
-    let evidence = sqlx::query_as::<_, EvidenceRow>(
-        "SELECT submitted_by, content FROM evidence WHERE dispute_id = $1",
-    )
-    .bind(dispute_id)
-    .fetch_all(pool)
-    .await?;
-
-    let client_evidence: Vec<String> = evidence
-        .iter()
-        .filter(|e| e.submitted_by == job.client_address)
-        .map(|e| e.content.clone())
-        .collect();
-
-    let freelancer_evidence: Vec<String> = evidence
-        .iter()
-        .filter(|e| job.freelancer_address.as_deref() == Some(&e.submitted_by))
-        .map(|e| e.content.clone())
-        .collect();
-
-    let verdict = judge
-        .judge(&job.description, "", client_evidence, freelancer_evidence)
+    let job = sqlx::query_as::<_, JobRow>("SELECT on_chain_job_id FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(pool)
         .await?;
+
+    let verdict = judge.judge(pool, dispute_id).await?;
 
     let job_id_str = job
         .on_chain_job_id
@@ -144,13 +113,14 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+    use crate::services::judge::{CaseFile, JobContext};
 
     #[tokio::test]
     async fn test_judge_service_mocked() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/judge"))
+            .and(path("/analyze"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "winner": "freelancer",
                 "freelancer_share_bps": 10000,
@@ -159,18 +129,21 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        std::env::set_var("JUDGE_API_URL", format!("{}/judge", mock_server.uri()));
+        std::env::set_var("OPENCLAW_API_URL", mock_server.uri());
         let judge = JudgeService::from_env();
 
-        let verdict = judge
-            .judge(
-                "build a webapp",
-                "",
-                vec![],
-                vec!["here is the repo".to_string()],
-            )
-            .await
-            .unwrap();
+        let case_file = CaseFile {
+            dispute_id: Uuid::new_v4(),
+            job_context: JobContext {
+                title: "Test".to_string(),
+                description: "Test".to_string(),
+                budget_usdc: 1000,
+                milestones: vec![],
+            },
+            evidence: vec![],
+        };
+
+        let verdict = judge.judge_case_file(case_file).await.unwrap();
 
         assert_eq!(verdict.winner, "freelancer");
         assert_eq!(verdict.freelancer_share_bps, 10000);

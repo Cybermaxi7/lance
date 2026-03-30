@@ -207,10 +207,15 @@ impl JudgeService {
         Ok(format!("[Stub content for IPFS CID: {}]", cid))
     }
 
-    /// Core entry point for triggering a dispute analysis.
+    /// Core entry point for triggering a dispute analysis from a pre-bundled CaseFile.
+    pub async fn judge_case_file(&self, case_file: CaseFile) -> Result<JudgeVerdict> {
+        self.openclaw.analyze_dispute(case_file).await
+    }
+
+    /// Core entry point for triggering a dispute analysis by Uuid.
     pub async fn judge(&self, pool: &PgPool, dispute_id: Uuid) -> Result<JudgeVerdict> {
         let case_file = self.bundle_case_file(pool, dispute_id).await?;
-        self.openclaw.analyze_dispute(case_file).await
+        self.judge_case_file(case_file).await
     }
 }
 
