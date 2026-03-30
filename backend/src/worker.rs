@@ -24,11 +24,10 @@ async fn process_open_disputes(
     judge: &JudgeService,
     stellar: Option<&StellarService>,
 ) -> anyhow::Result<()> {
-    let disputes: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id, job_id FROM disputes WHERE status = 'open'",
-    )
-    .fetch_all(pool)
-    .await?;
+    let disputes: Vec<(Uuid, Uuid)> =
+        sqlx::query_as("SELECT id, job_id FROM disputes WHERE status = 'open'")
+            .fetch_all(pool)
+            .await?;
 
     for (dispute_id, job_id) in disputes {
         if let Err(e) = process_dispute(pool, judge, stellar, dispute_id, job_id).await {
@@ -107,7 +106,10 @@ async fn process_dispute(
         .unwrap_or_else(|| job_id.to_string());
 
     let on_chain_tx: Option<String> = if let Some(s) = stellar {
-        Some(s.resolve_dispute(&job_id_str, verdict.freelancer_share_bps as u32).await?)
+        Some(
+            s.resolve_dispute(&job_id_str, verdict.freelancer_share_bps as u32)
+                .await?,
+        )
     } else {
         None
     };
@@ -161,7 +163,12 @@ mod tests {
         let judge = JudgeService::from_env();
 
         let verdict = judge
-            .judge("build a webapp", "", vec![], vec!["here is the repo".to_string()])
+            .judge(
+                "build a webapp",
+                "",
+                vec![],
+                vec!["here is the repo".to_string()],
+            )
             .await
             .unwrap();
 

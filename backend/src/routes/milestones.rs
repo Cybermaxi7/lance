@@ -34,7 +34,7 @@ pub async fn release_milestone(
     // Verify milestone belongs to job
     let milestone = sqlx::query_as::<_, Milestone>(
         r#"SELECT id, job_id, index, title, amount_usdc, status, tx_hash, released_at
-           FROM milestones WHERE id = $1 AND job_id = $2"#
+           FROM milestones WHERE id = $1 AND job_id = $2"#,
     )
     .bind(milestone_id)
     .bind(job_id)
@@ -71,7 +71,7 @@ pub async fn release_milestone(
     let updated = sqlx::query_as::<_, Milestone>(
         r#"UPDATE milestones SET status = 'released', tx_hash = $1, released_at = CURRENT_TIMESTAMP
            WHERE id = $2
-           RETURNING id, job_id, index, title, amount_usdc, status, tx_hash, released_at"#
+           RETURNING id, job_id, index, title, amount_usdc, status, tx_hash, released_at"#,
     )
     .bind(tx_hash)
     .bind(milestone_id)

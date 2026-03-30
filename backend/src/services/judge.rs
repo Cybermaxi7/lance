@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub struct JudgeVerdict {
-    pub winner: String,           // "freelancer" | "client" | "split"
+    pub winner: String, // "freelancer" | "client" | "split"
     pub freelancer_share_bps: i32,
     pub reasoning: String,
 }
@@ -38,8 +38,14 @@ impl JudgeService {
         client_evidence: Vec<String>,
         freelancer_evidence: Vec<String>,
     ) -> Result<JudgeVerdict> {
-        let body = JudgeRequest { job_spec, deliverable_hash, client_evidence, freelancer_evidence };
-        let verdict: JudgeVerdict = self.client
+        let body = JudgeRequest {
+            job_spec,
+            deliverable_hash,
+            client_evidence,
+            freelancer_evidence,
+        };
+        let verdict: JudgeVerdict = self
+            .client
             .post(&self.api_url)
             .json(&body)
             .send()
