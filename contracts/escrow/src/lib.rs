@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +51,34 @@ pub enum DataKey {
 
 #[contracttype]
 #[derive(Clone)]
+pub struct EscrowInitializedEvent {
+    pub admin: Address,
+    pub agent_judge: Address,
+    pub initialized_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AgentJudgeUpdatedEvent {
+    pub old_agent: Address,
+    pub new_agent: Address,
+    pub updated_at: u64,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EscrowError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,
+    InvalidInput = 4,
+    JobNotFound = 5,
+    InvalidState = 6,
+    AmountMismatch = 7,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct DisputeRaisedEvent {
     pub job_id: u64,
     pub initiator: Address,
@@ -59,32 +87,74 @@ pub struct DisputeRaisedEvent {
     pub raised_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct DepositEvent {
+    pub job_id: u64,
+    pub amount: i128,
+    pub deposited_at: u64,
+}
+
 #[contract]
 pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
-    pub fn initialize(env: Env, admin: Address, agent_judge: Address) {
+    pub fn initialize(env: Env, admin: Address, agent_judge: Address) -> Result<(), EscrowError> {
+        // Prevent double initialization
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            return Err(EscrowError::AlreadyInitialized);
         }
+
+        // Basic validation: admin and agent_judge must be distinct
+        if admin == agent_judge {
+            return Err(EscrowError::InvalidInput);
+        }
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
             .set(&DataKey::AgentJudge, &agent_judge);
+
+        // Emit an initialization event for off-chain consumers and logging
+        let event = EscrowInitializedEvent {
+            admin: admin.clone(),
+            agent_judge: agent_judge.clone(),
+            initialized_at: env.ledger().timestamp(),
+        };
+        env.events().publish(("escrow", "Initialized"), event);
+
+        Ok(())
     }
 
     /// Admin can update the Agent Judge address.
-    pub fn set_agent_judge(env: Env, new_agent_judge: Address) {
+    /// Admin can update the Agent Judge address.
+    pub fn set_agent_judge(env: Env, new_agent_judge: Address) -> Result<(), EscrowError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("not initialized");
+            .ok_or(EscrowError::NotInitialized)?;
+        // This will panic with Soroban auth error if the signer isn't present; keep that behavior
         admin.require_auth();
+
+        if admin == new_agent_judge {
+            return Err(EscrowError::InvalidInput);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::AgentJudge, &new_agent_judge);
+
+        // Emit an event for off-chain logging and debugging
+        let evt = AgentJudgeUpdatedEvent {
+            old_agent: admin.clone(),
+            new_agent: new_agent_judge.clone(),
+            updated_at: env.ledger().timestamp(),
+        };
+        env.events().publish(("escrow", "AgentJudgeUpdated"), evt);
+
+        Ok(())
     }
 
     /// Client creates a job entry in Setup phase.
@@ -133,32 +203,56 @@ impl EscrowContract {
     }
 
     /// Client deposits total amount and transitions job to Funded.
-    pub fn deposit(env: Env, job_id: u64, amount: i128) {
+    pub fn deposit(env: Env, job_id: u64, amount: i128) -> Result<(), EscrowError> {
         let key = DataKey::Job(job_id);
-        let mut job: EscrowJob = env.storage().persistent().get(&key).expect("job not found");
+        let mut job: EscrowJob = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(EscrowError::JobNotFound)?;
+
+        // Caller must be client
         job.client.require_auth();
-        assert!(
-            job.status == EscrowStatus::Setup,
-            "already funded or invalid state"
-        );
-        assert!(amount > 0, "amount must be > 0");
-        assert!(!job.milestones.is_empty(), "no milestones defined");
+
+        // Only allow deposit in Setup state
+        if job.status != EscrowStatus::Setup {
+            return Err(EscrowError::InvalidState);
+        }
+
+        if amount <= 0 {
+            return Err(EscrowError::InvalidInput);
+        }
+
+        if job.milestones.is_empty() {
+            return Err(EscrowError::InvalidInput);
+        }
 
         let mut total_milestones_amount = 0i128;
         for m in job.milestones.iter() {
-            total_milestones_amount += m.amount;
+            total_milestones_amount = total_milestones_amount.saturating_add(m.amount);
         }
-        assert!(
-            total_milestones_amount == amount,
-            "sum of milestones must equal total amount"
-        );
 
+        if total_milestones_amount != amount {
+            return Err(EscrowError::AmountMismatch);
+        }
+
+        // Transfer tokens from client to contract
         let token_client = token::Client::new(&env, &job.token);
         token_client.transfer(&job.client, &env.current_contract_address(), &amount);
 
         job.total_amount = amount;
         job.status = EscrowStatus::Funded;
         env.storage().persistent().set(&key, &job);
+
+        // Emit deposit event for off-chain logging
+        let evt = DepositEvent {
+            job_id,
+            amount,
+            deposited_at: env.ledger().timestamp(),
+        };
+        env.events().publish(("escrow", "Deposit"), evt);
+
+        Ok(())
     }
 
     /// Client approves a milestone -- releases next pending milestone to freelancer.
@@ -520,7 +614,8 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "already initialized")]
+    // AlreadyInitialized surfaces as host error code #1
+    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_double_init() {
         let env = Env::default();
         env.mock_all_auths();
@@ -638,7 +733,8 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "sum of milestones must equal total amount")]
+    // Amount mismatch surfaces as host error code #7
+    #[should_panic(expected = "Error(Contract, #7)")]
     fn test_deposit_with_wrong_total_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -657,11 +753,14 @@ mod test {
         cc.initialize(&admin, &agent_judge);
         cc.create_job(&1u64, &client, &freelancer, &token_addr);
         cc.add_milestone(&1u64, &500i128);
-        cc.deposit(&1u64, &1000i128); // Should panic as 500 != 1000
+        // Should Err as 500 != 1000; the Soroban test client surfaces contract
+        // errors as host panics, so call directly and let the test expect a panic.
+        cc.deposit(&1u64, &1000i128);
     }
 
     #[test]
-    #[should_panic(expected = "no milestones defined")]
+    // No milestones -> InvalidInput surfaces as host error code #4
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_deposit_no_milestones_panics() {
         let env = Env::default();
         env.mock_all_auths();
